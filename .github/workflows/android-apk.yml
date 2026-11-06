@@ -1,0 +1,63 @@
+name: Android APK
+
+# Builds the FastWake APK on every push to main and publishes it as a GitHub
+# Release named after versionName (e.g. v0.1). Pushing more commits without
+# bumping versionName replaces that release's APK with the newest build.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Install NDK and CMake
+        run: yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "ndk;27.2.12479018" "cmake;3.22.1" > /dev/null
+
+      - name: Build APK
+        working-directory: android
+        run: |
+          echo "sdk.dir=$ANDROID_HOME" > local.properties
+          chmod +x gradlew
+          ./gradlew --no-daemon assembleRelease
+
+      - name: Read version
+        id: v
+        run: echo "version=$(grep -oP 'versionName = "\K[^"]+' android/app/build.gradle.kts)" >> "$GITHUB_OUTPUT"
+
+      - name: Rename APK
+        run: cp android/app/build/outputs/apk/release/app-release.apk "FastWake-v${{ steps.v.outputs.version }}.apk"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: FastWake-v${{ steps.v.outputs.version }}-${{ github.sha }}
+          path: FastWake-v${{ steps.v.outputs.version }}.apk
+
+      - name: Publish release
+        if: github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          V="v${{ steps.v.outputs.version }}"
+          APK="FastWake-$V.apk"
+          NOTES="Android build of ${GITHUB_SHA::7}. Install on an arm64 phone running Android 9 or newer."
+          if gh release view "$V" > /dev/null 2>&1; then
+            gh release upload "$V" "$APK" --clobber
+            gh release edit "$V" --notes "$NOTES"
+          else
+            gh release create "$V" "$APK" --target "$GITHUB_SHA" --title "FastWake $V" --notes "$NOTES"
+          fi

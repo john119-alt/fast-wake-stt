@@ -28,6 +28,18 @@ android {
         }
     }
 
+    signingConfigs {
+        // Committed debug key (public, password "android") so every build —
+        // local or GitHub Actions — has the same signature and installs as an
+        // update over the previous one. NOT for Play Store publishing.
+        getByName("debug") {
+            storeFile = file("debug.keystore")
+            storePassword = "android"
+            keyAlias = "androiddebugkey"
+            keyPassword = "android"
+        }
+    }
+
     buildTypes {
         release {
             // Signed with the debug key so the APK installs directly for testing.

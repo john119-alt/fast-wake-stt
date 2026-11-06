@@ -38,8 +38,14 @@ vendor/whisper.cpp      upstream whisper.cpp, git submodule pinned to 727d3e7
 ```
 
 ## Android app (FastWake)
-Install the APK from the GitHub Releases page on an arm64 phone running
-Android 9 or newer. On first launch it downloads the two official models
+Every push to `main` is built by GitHub Actions
+(`.github/workflows/android-apk.yml`) and published on the **Releases** page as
+`FastWake-v<version>.apk`. Bumping `versionName` in
+`android/app/build.gradle.kts` starts a new release; otherwise the current
+version's APK is replaced with the newest build. All builds share the committed
+debug key, so a new APK installs as an update over the old one.
+
+Install the APK on an arm64 phone running Android 9 or newer. On first launch it downloads the two official models
 (~44 MB) into app storage. Press **Start listening**, then say "Hey Ordinary".
 Each decode pass shows its time in ms, and the badge turns green on a wake.
 
