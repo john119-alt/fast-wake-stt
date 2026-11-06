@@ -6,6 +6,9 @@
 #include <cstring>
 #include <vector>
 #include <fstream>
+#include <chrono>
+#include <string>
+#include <algorithm>
 
 // Minimal WAV reader: 16-bit PCM mono. Returns samples at file's rate.
 static bool read_wav(const char* path, std::vector<int16_t>& out, int& rate){
@@ -48,27 +51,47 @@ int main(int argc, char** argv){
     cfg.sample_rate = rate;
 
     WakeEngine eng;
+    auto t_load = std::chrono::steady_clock::now();
     if(!eng.init(cfg)){ fprintf(stderr,"engine init failed\n"); return 1; }
+    printf("engine load   : %.0f ms (model load + warm-up, once per app start)\n",
+           std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-t_load).count());
 
     // Stream in 1-second chunks, like a live mic feed.
     const size_t chunk = (size_t)rate;
-    WakeResult last;
-    double total_proc_ms = 0.0; int passes = 0; bool woke = false;
+    double decode_ms = 0.0, vad_ms = 0.0, decoded_audio_ms = 0.0;
+    int decodes = 0; bool woke = false;
+    std::string transcript;
+    auto take = [&](const WakeResult& r, double at_ms){
+        vad_ms += r.vad_ms;
+        if(!r.decoded) return;
+        ++decodes; decode_ms += r.proc_ms; decoded_audio_ms += r.audio_ms;
+        woke = woke || r.wake_detected;
+        char conf[32] = "";
+        if(r.wake_conf > 0) snprintf(conf, sizeof conf, " conf=%.2f", r.wake_conf);
+        printf("  [t=%5.1fs] decoded %.1fs of speech in %4.0f ms%s%s: %s\n",
+               at_ms/1000.0, r.audio_ms/1000.0, r.proc_ms, conf,
+               r.wake_detected ? " <WAKE>" : "", r.transcript.c_str());
+        if(!transcript.empty()) transcript += " |";
+        transcript += r.transcript;
+    };
     for(size_t off=0; off<pcm.size(); off+=chunk){
         size_t n = std::min(chunk, pcm.size()-off);
-        last = eng.feed(pcm.data()+off, n);
-        total_proc_ms += last.proc_ms; ++passes;
-        woke = woke || last.wake_detected;
+        take(eng.feed(pcm.data()+off, n), 1000.0*(off+n)/rate);
     }
+    take(eng.flush(), 1000.0*pcm.size()/rate);
+
     const double clip_ms = 1000.0 * pcm.size() / rate;
+    const double total_ms = decode_ms + vad_ms;
     printf("\n================ RESULT ================\n");
-    printf("transcript    : %s\n", last.transcript.c_str());
+    printf("transcript    : %s\n", transcript.c_str());
     printf("wake detected : %s\n", woke ? "YES" : "no");
     printf("threads=%d  gpu=%d\n", cfg.n_threads, (int)cfg.use_gpu);
-    printf("clip length   : %.0f ms  (%d passes)\n", clip_ms, passes);
-    printf("last pass     : %.0f ms\n", last.proc_ms);
-    printf("total compute : %.0f ms\n", total_proc_ms);
-    const double rtf = clip_ms>0 ? total_proc_ms/clip_ms : 0.0;
+    printf("clip length   : %.0f ms  (%d decodes, %.0f ms of speech decoded)\n",
+           clip_ms, decodes, decoded_audio_ms);
+    printf("VAD compute   : %.0f ms\n", vad_ms);
+    printf("decode compute: %.0f ms\n", decode_ms);
+    printf("total compute : %.0f ms\n", total_ms);
+    const double rtf = clip_ms>0 ? total_ms/clip_ms : 0.0;
     printf("stream RTF    : %.3f  (%.1fx real-time)\n", rtf, rtf>0 ? 1.0/rtf : 0.0);
     printf("========================================\n");
     return 0;

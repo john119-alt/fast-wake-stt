@@ -16,3 +16,6 @@ android/build/
 android/local.properties
 *.apk
 *.aab
+
+# local symlink to downloaded models
+/models

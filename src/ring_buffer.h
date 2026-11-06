@@ -33,6 +33,16 @@ public:
         for (size_t i = 0; i < size_; ++i) out[i] = buf_[(head_ + i) % cap_];
     }
 
+    // Copy `len` samples that end `skip_end` samples before the newest one.
+    // Clamped to what the buffer actually holds. `out` keeps its capacity.
+    void tail(size_t len, size_t skip_end, std::vector<T>& out) const {
+        if (skip_end >= size_) { out.clear(); return; }
+        len = std::min(len, size_ - skip_end);
+        const size_t start = size_ - skip_end - len;   // offset from oldest
+        out.resize(len);
+        for (size_t i = 0; i < len; ++i) out[i] = buf_[(head_ + start + i) % cap_];
+    }
+
     size_t size() const { return size_; }
     size_t capacity() const { return cap_; }
     void clear() { head_ = 0; size_ = 0; }

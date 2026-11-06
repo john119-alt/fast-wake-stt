@@ -1,6 +1,7 @@
 // JNI bridge between the Kotlin app and WakeEngine.
 #include <jni.h>
 #include <string>
+#include <cstdio>
 #include <android/log.h>
 #include "wake_engine.h"
 
@@ -28,18 +29,31 @@ Java_com_fastwake_app_NativeEngine_create(JNIEnv* env, jobject,
     return reinterpret_cast<jlong>(eng);
 }
 
-// Returns "wake<TAB>decode_ms<TAB>transcript"
+// Result encoding shared by feed() and flush():
+// "decoded<TAB>speaking<TAB>wake<TAB>conf<TAB>decode_ms<TAB>audio_ms<TAB>transcript"
+static jstring encode(JNIEnv* env, const WakeResult& r) {
+    char head[96];
+    snprintf(head, sizeof head, "%d\t%d\t%d\t%.2f\t%d\t%d\t",
+             r.decoded, r.speaking, r.wake_detected, r.wake_conf,
+             (int)r.proc_ms, (int)r.audio_ms);
+    return env->NewStringUTF((std::string(head) + r.transcript).c_str());
+}
+
 extern "C" JNIEXPORT jstring JNICALL
 Java_com_fastwake_app_NativeEngine_feed(JNIEnv* env, jobject,
         jlong handle, jshortArray pcm, jint n) {
     auto* eng = reinterpret_cast<WakeEngine*>(handle);
-    if (!eng) return env->NewStringUTF("0\t0\t");
+    if (!eng) return encode(env, WakeResult{});
     jshort* data = env->GetShortArrayElements(pcm, nullptr);
     WakeResult r = eng->feed(reinterpret_cast<const int16_t*>(data), (size_t)n);
     env->ReleaseShortArrayElements(pcm, data, JNI_ABORT);
-    std::string out = std::string(r.wake_detected ? "1" : "0") + "\t" +
-                      std::to_string((int)r.proc_ms) + "\t" + r.transcript;
-    return env->NewStringUTF(out.c_str());
+    return encode(env, r);
+}
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_fastwake_app_NativeEngine_flush(JNIEnv* env, jobject, jlong handle) {
+    auto* eng = reinterpret_cast<WakeEngine*>(handle);
+    return encode(env, eng ? eng->flush() : WakeResult{});
 }
 
 extern "C" JNIEXPORT void JNICALL

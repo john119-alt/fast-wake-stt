@@ -1,0 +1,40 @@
+name: Engine tests
+
+# Builds the desktop engine and runs the wake-word regression clips
+# (scripts/test.sh) on every push and pull request.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Build
+        run: |
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+          cmake --build build -j
+
+      - name: Cache models
+        uses: actions/cache@v4
+        with:
+          path: models
+          key: models-tiny.en-q8_0-silero-v5.1.2
+
+      - name: Download models
+        run: |
+          mkdir -p models
+          [ -s models/ggml-tiny.en-q8_0.bin ] || curl -fsSL -o models/ggml-tiny.en-q8_0.bin \
+            https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.en-q8_0.bin
+          [ -s models/ggml-silero-v5.1.2.bin ] || curl -fsSL -o models/ggml-silero-v5.1.2.bin \
+            https://huggingface.co/ggml-org/whisper-vad/resolve/main/ggml-silero-v5.1.2.bin
+
+      - name: Wake-word tests
+        run: scripts/test.sh build models "$(nproc)"

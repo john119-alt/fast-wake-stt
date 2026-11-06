@@ -41,6 +41,7 @@ class MainActivity : Activity() {
 
     @Volatile private var running = false
     private var engine = 0L
+    private var decoder: Thread? = null
     private val chunks = LinkedBlockingQueue<ShortArray>()
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -108,7 +109,7 @@ class MainActivity : Activity() {
                 say("Listening… say \"Hey Ordinary\"")
                 ui { wakeBadge.text = "listening"; wakeBadge.setBackgroundColor(Color.parseColor("#1565C0")) }
                 thread(name = "mic") { recordLoop() }
-                thread(name = "decode") { decodeLoop() }
+                decoder = thread(name = "decode") { decodeLoop() }
             } catch (e: Exception) {
                 say("Error: ${e.message}"); stopUi()
             }
@@ -151,14 +152,15 @@ class MainActivity : Activity() {
         }
     }
 
-    /** Capture 16 kHz mono PCM and hand it off in 1-second chunks. */
+    /** Capture 16 kHz mono PCM and hand it off in 100 ms chunks. The engine only
+     *  runs the cheap voice detector per chunk; Whisper runs when speech ends. */
     private fun recordLoop() {
         val minBuf = AudioRecord.getMinBufferSize(RATE,
             AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT)
         val rec = AudioRecord(MediaRecorder.AudioSource.VOICE_RECOGNITION, RATE,
             AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT,
             maxOf(minBuf, RATE * 2))
-        val chunk = ShortArray(RATE)
+        val chunk = ShortArray(RATE / 10)
         rec.startRecording()
         try {
             while (running) {
@@ -174,6 +176,7 @@ class MainActivity : Activity() {
 
     /** Feed audio to the engine. If decoding falls behind, merge queued chunks. */
     private fun decodeLoop() {
+        var wasSpeaking = false
         while (running) {
             val first = chunks.poll(500, TimeUnit.MILLISECONDS) ?: continue
             val pending = mutableListOf(first)
@@ -182,24 +185,42 @@ class MainActivity : Activity() {
             var off = 0
             for (c in pending) { c.copyInto(pcm, off); off += c.size }
 
-            val parts = NativeEngine.feed(engine, pcm, pcm.size).split("\t", limit = 3)
-            val woke = parts.getOrNull(0) == "1"
-            val ms = parts.getOrNull(1) ?: "?"
-            val text = parts.getOrNull(2)?.trim().orEmpty()
-            if (text.isNotEmpty()) append("[$ms ms] $text")
-            if (woke) {
-                append(">>> WAKE WORD DETECTED")
-                NativeEngine.reset(engine)   // clear the window so it doesn't refire
+            val r = NativeEngine.feedAudio(engine, pcm)
+            report(r)
+            if (r.speaking != wasSpeaking && !r.wake) {
+                wasSpeaking = r.speaking
                 ui {
-                    wakeBadge.text = "HEY ORDINARY ✓"
-                    wakeBadge.setBackgroundColor(Color.parseColor("#2E7D32"))
+                    if (r.speaking) {
+                        wakeBadge.text = "hearing speech…"
+                        wakeBadge.setBackgroundColor(Color.parseColor("#6A1B9A"))
+                    } else if (wakeBadge.text != "HEY ORDINARY ✓") {
+                        wakeBadge.text = "listening"
+                        wakeBadge.setBackgroundColor(Color.parseColor("#1565C0"))
+                    }
                 }
+            }
+        }
+        // Stopped mid-sentence: transcribe what was already said.
+        if (engine != 0L) report(NativeEngine.flushAudio(engine))
+    }
+
+    private fun report(r: EngineResult) {
+        if (!r.decoded) return
+        val conf = if (r.conf > 0f) " conf=%.2f".format(r.conf) else ""
+        if (r.text.isNotEmpty())
+            append("[%.1fs speech → %d ms]%s %s".format(r.audioMs / 1000f, r.decodeMs, conf, r.text))
+        if (r.wake) {
+            append(">>> WAKE WORD DETECTED")
+            ui {
+                wakeBadge.text = "HEY ORDINARY ✓"
+                wakeBadge.setBackgroundColor(Color.parseColor("#2E7D32"))
             }
         }
     }
 
     override fun onDestroy() {
         running = false
+        decoder?.join(3000)   // let the decode thread finish before freeing the engine
         if (engine != 0L) { NativeEngine.free(engine); engine = 0L }
         super.onDestroy()
     }
