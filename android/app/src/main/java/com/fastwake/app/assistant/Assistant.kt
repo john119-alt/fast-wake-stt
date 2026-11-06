@@ -34,4 +34,6 @@ data class Answer(
     /** Time from request to first spoken word, for display. */
     val firstTextMs: Long = -1,
     val totalMs: Long = 0,
+    /** Technical detail for the screen (e.g. the provider's error message, model used). */
+    val detail: String = "",
 )

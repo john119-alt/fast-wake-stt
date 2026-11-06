@@ -17,6 +17,7 @@ import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
+import com.fastwake.app.data.Prefs
 import com.fastwake.app.data.SecureStore
 import com.fastwake.app.service.AssistantService
 import com.fastwake.app.service.AssistantState
@@ -44,6 +45,8 @@ class MainActivity : Activity() {
     private lateinit var phaseLabel: TextView
     private lateinit var statusLine: TextView
     private lateinit var keyBanner: View
+    private lateinit var bannerTitle: TextView
+    private lateinit var bannerBody: TextView
     private lateinit var conversation: LinearLayout
     private lateinit var scroll: ScrollView
     private lateinit var streamingBubble: TextView
@@ -65,8 +68,8 @@ class MainActivity : Activity() {
 
         keyBanner = card().apply {
             background = rounded(Color.parseColor("#2A2412"), dp(16).toFloat(), dp(1), Ui.WARN)
-            addView(text("Add your Claude API key", 15f, Ui.WARN, bold = true))
-            addView(text("Answers need a key from console.anthropic.com. Tap to open Settings.", 13f, Ui.MUTED))
+            bannerTitle = text("", 15f, Ui.WARN, bold = true).also(::addView)
+            bannerBody = text("", 13f, Ui.MUTED).also(::addView)
             setOnClickListener { startActivity(Intent(this@MainActivity, SettingsActivity::class.java)) }
         }
         root.addView(keyBanner, lp(top = dp(12)))
@@ -113,7 +116,15 @@ class MainActivity : Activity() {
 
     override fun onResume() {
         super.onResume()
-        keyBanner.visibility = if (SecureStore(this).hasApiKey) View.GONE else View.VISIBLE
+        val provider = Prefs(this).provider
+        keyBanner.visibility = if (SecureStore(this).hasKey(provider)) View.GONE else View.VISIBLE
+        if (provider == Prefs.PROVIDER_CLAUDE) {
+            bannerTitle.text = "Add your Claude API key"
+            bannerBody.text = "Answers need a key from console.anthropic.com. Tap to open Settings."
+        } else {
+            bannerTitle.text = "Add a free Gemini API key"
+            bannerBody.text = "Get one at aistudio.google.com (no card needed), then paste it in Settings. Tap here."
+        }
     }
 
     override fun onDestroy() { scope.cancel(); super.onDestroy() }
@@ -174,7 +185,7 @@ class MainActivity : Activity() {
         }
         for (t in turns) {
             conversation.addView(bubble(t.text, t.fromUser), bubbleLp(t.fromUser))
-            if (t.meta.isNotEmpty() && t.meta != "error") {
+            if (t.meta.isNotEmpty() && t.meta != "error") {   // "error · <detail>" is shown
                 conversation.addView(text(t.meta, 11f, Ui.MUTED).apply { setPadding(dp(6), dp(2), 0, dp(4)) })
             }
         }

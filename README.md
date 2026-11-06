@@ -2,9 +2,9 @@
 
 A hands-free voice assistant for Android. Say **"Hey Ordinary, what's the
 weather in Mumbai?"** and it answers out loud. Wake-word detection and
-speech-to-text run **on the phone** (whisper.cpp + Silero VAD); answers come
-from **Claude** with live **web search**, streamed and spoken sentence by
-sentence.
+speech-to-text run **on the phone** (whisper.cpp + Silero VAD). Answers come
+from **Google Gemini on its free tier** (no card needed) or **Claude**, streamed
+and spoken sentence by sentence.
 
 This is a clean-room project. Its on-device engine was designed after studying
 how the "Ordi" app works, then rebuilt with measurable speed improvements. None
@@ -19,7 +19,7 @@ mic (16 kHz) ─▶ Silero VAD on every 32 ms ─▶ end of speech ─▶ Whispe
             "Hey Ordinary, <question>"  ◀── wake-phrase check + confidence
                        │
                        ▼
-         Claude (streaming, web search) ─▶ sentence splitter ─▶ text-to-speech
+   live data (weather, Wikipedia) ─▶ Gemini or Claude (streaming) ─▶ sentence splitter ─▶ text-to-speech
                        │
                        └─ follow-up window: reply without the wake word for 7 s
 ```
@@ -27,7 +27,8 @@ mic (16 kHz) ─▶ Silero VAD on every 32 ms ─▶ end of speech ─▶ Whispe
 - **Listening** runs as a foreground service with a "FastWake is listening"
   notification, so it works with the screen off.
 - **Only your question** (the words after the wake phrase) leaves the phone, and
-  it goes only to Anthropic. Everything else you say is transcribed on the phone
+  it goes only to the AI provider you chose (plus a city name to Open-Meteo or
+  a topic to Wikipedia when needed). Everything else you say is transcribed on the phone
   and discarded.
 - **Speaking starts after the first sentence**, while the rest of the answer is
   still streaming.
@@ -40,26 +41,50 @@ mic (16 kHz) ─▶ Silero VAD on every 32 ms ─▶ end of speech ─▶ Whispe
 1. On your phone, open **github.com/john119-alt/fast-wake-stt → Releases**,
    download the newest `FastWake-v*.apk`, and install it. Requires an arm64
    phone with Android 9 or newer. New versions install over old ones.
-2. Get a Claude API key at **console.anthropic.com → API Keys** (pay-as-you-go,
-   billed to your Anthropic account).
+2. Get a **free Gemini API key**: sign in at **aistudio.google.com** with your
+   Google account → **Get API key** → **Create API key**. No card needed.
 3. In the app, open **Settings**, paste the key, tap **Save key**, then
-   **Test key**.
+   **Test key**. Optionally set your **home city** for weather questions.
 4. Back on the main screen tap **Start listening** and allow the microphone. The
    first start downloads the speech models (~44 MB, use Wi-Fi).
 5. Say *"Hey Ordinary, …"*.
 
+### Providers
+| | Gemini (default) | Claude |
+|---|---|---|
+| Cost | free tier, no card | pay-as-you-go |
+| Live facts | weather (Open-Meteo) and Wikipedia, fetched by the app | built-in web search (news, scores, prices too) |
+| Models | Fast = Flash-Lite, Smart = Flash (falls back to other free models automatically) | Opus 5.5, Sonnet 5.5, Haiku 5.5 |
+| Notes | daily free limits; Google may use free-tier conversations to improve its products | |
+
+The app fetches weather and Wikipedia facts itself and adds them to the
+question, so Gemini answers in **one** model round trip. Gemini's own Google
+Search grounding isn't on the free tier.
+
 ### Settings
 | Setting | Default | |
 |---|---|---|
-| Model | Opus 5.5 | Opus 5.5 (smartest), Sonnet 5.5 (balanced), Haiku 5.5 (fastest, cheapest) |
+| AI provider | Gemini | Gemini (free) or Claude |
+| Model | Gemini Fast | per provider (see above) |
+| Home city | none | for weather questions that don't name a place |
 | Follow-up questions | on | listen 7 s after an answer without the wake word |
 | Wake chime | on | tone when it hears the wake phrase on its own |
 | Speaking speed | 1.0× | 0.7×–1.5× |
 
-The API key is encrypted with an Android Keystore key (hardware-backed on most
-phones). It's sent only to Anthropic. A shared server is planned before giving
+API keys are encrypted with an Android Keystore key (hardware-backed on most
+phones) and sent only to their provider. A shared server is planned before giving
 the app to other people (see Roadmap), since any key inside an app can be
 extracted.
+
+## Gemini integration
+
+`assistant/GeminiAssistant.kt` (REST `streamGenerateContent?alt=sse`, OkHttp):
+thinking set to the lowest level each model supports, conversation history with
+thought signatures echoed back, automatic fallback to the next free model if one
+isn't available to the key, retry without the thinking setting if it's rejected,
+and Google's exact error text shown in Settings → Test key and under failed
+answers. `assistant/LiveData.kt` fetches Open-Meteo weather (3-day forecast) and
+Wikipedia summaries.
 
 ## Claude integration
 
@@ -116,8 +141,8 @@ before the text is used. A dedicated keyword-spotting model is on the roadmap.
 |---|---|---|
 | Engine unit tests | wake matching, loop collapsing, command extraction | `ctest --test-dir build` |
 | Audio regression | 7 clips with expected wake/no-wake, fails on any loop | `scripts/test.sh` |
-| App unit tests (23) | Claude client against a mock streaming server; sentence splitter; conversation state machine | `cd android && ./gradlew testReleaseUnitTest` |
-| R8 smoke test | the shrunk release build still talks to Claude correctly (requests, streaming, search history, errors) | `cd android && ./r8-smoke.sh` |
+| App unit tests (40) | Gemini and Claude clients against mock streaming servers; live-data parsing; sentence splitter; conversation state machine. `FASTWAKE_LIVE=1` also hits real Open-Meteo/Wikipedia | `cd android && ./gradlew testReleaseUnitTest` |
+| R8 smoke test | the shrunk release build still talks to Claude, Gemini, Open-Meteo and Wikipedia correctly (requests, streaming, history, fallbacks, errors) | `cd android && ./r8-smoke.sh` |
 
 GitHub Actions runs all of them on every push. An APK is only published if they
 pass.
@@ -150,7 +175,7 @@ test-audio/             wake / no-wake / near-miss / long-speech clips
 android/app/src/main/
   cpp/jni.cpp           JNI bridge to the engine
   java/com/fastwake/app/
-    assistant/          Claude client, sentence splitter
+    assistant/          Gemini + Claude clients, live data, sentence splitter
     service/            foreground listening service, conversation state machine
     speech/             text-to-speech, chimes
     data/               encrypted key storage, settings, history, model download

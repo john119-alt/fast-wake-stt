@@ -12,8 +12,8 @@ android {
         applicationId = "com.fastwake.app"
         minSdk = 28
         targetSdk = 35
-        versionCode = 3
-        versionName = "0.3"
+        versionCode = 4
+        versionName = "0.4"
         ndk { abiFilters += listOf("arm64-v8a") }
         externalNativeBuild {
             cmake {
@@ -81,7 +81,16 @@ dependencies {
     // Official Claude SDK (Kotlin uses the Java SDK).
     implementation("com.anthropic:anthropic-java:3.6.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
+    // Used directly by the Gemini client and live-data helpers (also SDK deps).
+    implementation("com.squareup.okhttp3:okhttp:4.12.0")
+    implementation("com.fasterxml.jackson.core:jackson-databind:2.19.4")
 
     testImplementation("junit:junit:4.13.2")
     testImplementation("com.squareup.okhttp3:mockwebserver:4.12.0")
+}
+
+tasks.withType<Test>().configureEach {
+    // Lets LiveDataTest's network test run locally with FASTWAKE_LIVE=1.
+    environment("FASTWAKE_LIVE", System.getenv("FASTWAKE_LIVE") ?: "0")
+    testLogging { showStandardStreams = true }
 }

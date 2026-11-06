@@ -3,6 +3,8 @@ package com.fastwake.app
 import com.fastwake.app.assistant.AnswerEvents
 import com.fastwake.app.assistant.ClaudeAssistant
 import com.fastwake.app.assistant.DeviceContext
+import com.fastwake.app.assistant.GeminiAssistant
+import com.fastwake.app.assistant.LiveData
 import java.io.BufferedInputStream
 import java.net.InetAddress
 import java.net.ServerSocket
@@ -120,6 +122,41 @@ object R8Smoke {
             repeat(3) { replies.addLast(529 to """{"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}""") }
             val r6 = asst().ask("x", none)
             check("529 mapped to busy message", !r6.ok && r6.text.contains("busy"), r6.text)
+
+            // --- Gemini (raw OkHttp + Jackson tree, shrunk) ---
+            fun gem(live: LiveData = LiveData(geocodeBase = base, forecastBase = base, wikiBase = base)) =
+                GeminiAssistant("AIza-test", GeminiAssistant.SPEED_FAST, base, live, { "" }, { it.printStackTrace() }) {
+                    DeviceContext(ZonedDateTime.of(2026, 11, 6, 13, 0, 0, 0, ZoneId.of("Asia/Kolkata")), "IN")
+                }
+            fun gchunk(t: String, finish: String = "") =
+                "data: {\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"$t\"" +
+                    (if (finish.isNotEmpty()) "" else "") + "}]}" + (if (finish.isNotEmpty()) ",\"finishReason\":\"$finish\"" else "") + "}]}\r\n\r\n"
+
+            // 7. live weather through LiveData (geocode + forecast) then Gemini stream
+            replies.addLast(200 to """{"results":[{"name":"Mumbai","latitude":19.07,"longitude":72.88,"admin1":"Maharashtra","country":"India"}]}""")
+            replies.addLast(200 to """{"current":{"time":"2026-11-06T13:00","temperature_2m":31.0,"apparent_temperature":34.0,"relative_humidity_2m":60,"weather_code":1,"wind_speed_10m":9.0,"precipitation":0.0},"daily":{"time":["2026-11-06","2026-11-07"],"weather_code":[1,61],"temperature_2m_max":[33.0,32.0],"temperature_2m_min":[26.0,25.0],"precipitation_probability_max":[5,70]}}""")
+            replies.addLast(200 to gchunk("Mainly clear, 31 degrees. ") + gchunk("Rain likely tomorrow.", "STOP"))
+            val g1 = gem().ask("what's the weather in Mumbai today", none)
+            check("gemini answer ok", g1.ok && g1.text == "Mainly clear, 31 degrees. Rain likely tomorrow.", g1.text + " / " + g1.detail)
+            val gb = bodies.last()
+            check("gemini request has live weather", gb.contains("Live weather for Mumbai") && gb.contains("light rain"))
+            check("gemini request has thinking level", gb.contains("\"thinkingLevel\":\"MINIMAL\""))
+
+            // 8. wikipedia lookup (search + summary) feeds the question
+            replies.addLast(200 to """{"query":{"search":[{"title":"Virat Kohli"}]}}""")
+            replies.addLast(200 to """{"extract":"Virat Kohli is an Indian international cricketer."}""")
+            replies.addLast(200 to gchunk("He's an Indian cricketer.", "STOP"))
+            val g2 = gem().ask("who is Virat Kohli", none)
+            check("gemini wikipedia answer", g2.ok && bodies.last().contains("Indian international cricketer"), g2.detail)
+
+            // 9. gemini model fallback + key error parsing
+            replies.addLast(404 to """{"error":{"code":404,"message":"models/x is not found","status":"NOT_FOUND"}}""")
+            replies.addLast(200 to gchunk("Hi.", "STOP"))
+            val g3 = gem().ask("hi", none)
+            check("gemini 404 falls back to next model", g3.ok && g3.detail == "gemini-3.1-flash-lite", g3.detail)
+            replies.addLast(400 to """{"error":{"code":400,"message":"API key not valid. Please pass a valid API key.","status":"INVALID_ARGUMENT"}}""")
+            val g4 = gem().ask("hi", none)
+            check("gemini bad key explained", !g4.ok && g4.text.contains("API key") && g4.detail.contains("API key not valid"), g4.detail)
         } catch (t: Throwable) {
             t.printStackTrace()
             check("no exception", false, t.toString())

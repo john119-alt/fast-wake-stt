@@ -19,18 +19,13 @@ import com.fastwake.app.NativeEngine
 import com.fastwake.app.R
 import com.fastwake.app.assistant.Assistant
 import com.fastwake.app.assistant.AnswerEvents
-import com.fastwake.app.assistant.ClaudeAssistant
-import com.fastwake.app.assistant.DeviceContext
 import com.fastwake.app.assistant.SentenceChunker
 import com.fastwake.app.data.HistoryStore
 import com.fastwake.app.data.ModelStore
 import com.fastwake.app.data.Prefs
-import com.fastwake.app.data.SecureStore
 import com.fastwake.app.speech.Chime
 import com.fastwake.app.speech.Speaker
 import com.fastwake.app.ui.MainActivity
-import java.time.ZonedDateTime
-import java.util.Locale
 import java.util.concurrent.Executors
 import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.TimeUnit
@@ -207,7 +202,7 @@ class AssistantService : Service() {
             }
         })
         AssistantState.setPhase(brain.phase)
-        AssistantState.setStatus(if (assistant == null) "Add your Claude API key in Settings to get answers." else "")
+        AssistantState.setStatus(if (assistant == null) "Add your ${Assistants.providerName(prefs)} API key in Settings to get answers." else "")
         micThread = thread(name = "mic") { runMic() }
 
         while (running) {
@@ -241,11 +236,7 @@ class AssistantService : Service() {
         engine = NativeEngine.create(models.path(ModelStore.WHISPER), models.path(ModelStore.SILERO), threads, WAKE_PHRASE)
         check(engine != 0L) { "speech engine failed to load" }
 
-        assistant = SecureStore(this).apiKey?.let { key ->
-            ClaudeAssistant(apiKey = key, model = prefs.model, onError = { Log.e(TAG, "assistant error", it) }) {
-                DeviceContext(ZonedDateTime.now(), Locale.getDefault().country)
-            }
-        }
+        assistant = Assistants.create(this, prefs)
         speaker.rate = prefs.speechRate
         history.newSession()
     }
@@ -287,7 +278,7 @@ class AssistantService : Service() {
 
         val current = assistant
         if (current == null) {
-            sayError("I need a Claude API key first. Open Settings in the app to add one.")
+            sayError("I need a ${Assistants.providerName(prefs)} API key first. Open Settings in the app to add one.")
             return
         }
 
@@ -312,7 +303,8 @@ class AssistantService : Service() {
                 chunker.finish()
                 val meta = buildString {
                     if (answer.firstTextMs >= 0) append("first words in ${"%.1f".format(answer.firstTextMs / 1000.0)} s")
-                    if (answer.searches.isNotEmpty()) append(" · searched: ${answer.searches.joinToString("; ")}")
+                    if (answer.searches.isNotEmpty()) append(" · used: ${answer.searches.joinToString("; ")}")
+                    if (answer.detail.isNotEmpty()) append(" · ${answer.detail}")
                 }
                 AssistantState.clearStreaming()
                 AssistantState.addTurn(Turn(fromUser = false, text = answer.text, meta = meta))
@@ -323,14 +315,16 @@ class AssistantService : Service() {
                 speaker.stop(notify = false)
                 speaker.beginAnswer()
                 AssistantState.clearStreaming()
-                sayError(answer.text)
+                if (answer.detail.isNotEmpty()) Log.w(TAG, "answer failed: ${answer.detail}")
+                sayError(answer.text, answer.detail)
             }
         }
     }
 
-    private fun sayError(text: String) {
+    private fun sayError(text: String, detail: String = "") {
         chime.error()
-        AssistantState.addTurn(Turn(fromUser = false, text = text, meta = "error"))
+        // The detail (e.g. Google's exact error message) is shown, not spoken.
+        AssistantState.addTurn(Turn(fromUser = false, text = text, meta = if (detail.isEmpty()) "error" else "error · $detail"))
         history.add("assistant", text, "error")
         events.put(Event.SpeakingStarted)
         speaker.speak(text)
