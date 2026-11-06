@@ -45,6 +45,9 @@ int main(int argc, char** argv){
     cfg.n_threads      = argc>4 ? atoi(argv[4]) : 4;
     cfg.use_gpu        = argc>5 ? atoi(argv[5])!=0 : true;
     if(argc>6) cfg.wake_phrase = argv[6];
+    // A/B switches for benchmarking (environment variables).
+    if(const char* e = getenv("FW_FULL_CTX")) cfg.fit_audio_ctx = atoi(e) == 0;
+    if(const char* e = getenv("FW_CTX_MIN"))  cfg.audio_ctx_min = atoi(e);
 
     std::vector<int16_t> pcm; int rate=0;
     if(!read_wav(argv[3], pcm, rate)){ fprintf(stderr,"bad WAV (need 16-bit mono)\n"); return 1; }
@@ -71,6 +74,7 @@ int main(int argc, char** argv){
         printf("  [t=%5.1fs] decoded %.1fs of speech in %4.0f ms%s%s: %s\n",
                at_ms/1000.0, r.audio_ms/1000.0, r.proc_ms, conf,
                r.wake_detected ? " <WAKE>" : "", r.transcript.c_str());
+        if(r.wake_detected) printf("             command after wake: \"%s\"\n", r.command.c_str());
         if(!transcript.empty()) transcript += " |";
         transcript += r.transcript;
     };

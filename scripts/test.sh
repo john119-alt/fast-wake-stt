@@ -28,8 +28,12 @@ while read -r clip want; do
     out=$("$BIN" $M "test-audio/$clip.wav" "$THREADS" 0 2>/dev/null)
     got=$(sed -n 's/^wake detected : //p' <<<"$out")
     rtf=$(sed -n 's/^stream RTF *: [0-9.]*  (\(.*\))/\1/p' <<<"$out")
-    text=$(sed -n 's/^transcript *: //p' <<<"$out" | cut -c1-60)
-    if [ "$got" = "$want" ]; then res=PASS; else res=FAIL; fail=1; fi
+    full=$(sed -n 's/^transcript *: //p' <<<"$out")
+    text=$(cut -c1-60 <<<"$full")
+    # A decoder loop: the same 3 words repeated three times in a row.
+    loop=$(grep -ciE '([[:alnum:]]+ [[:alnum:]]+ [[:alnum:]]+)[^[:alnum:]]+\1[^[:alnum:]]+\1' <<<"$full")
+    if [ "$got" = "$want" ] && [ "$loop" = 0 ]; then res=PASS; else res=FAIL; fail=1; fi
+    [ "$loop" != 0 ] && got="$got+LOOP"
     printf "%-20s %-8s %-8s %-6s %s |%s\n" "$clip" "$want" "${got:-?}" "$res" "$rtf" "$text"
 done <<<"$CASES"
 exit $fail

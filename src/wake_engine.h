@@ -29,8 +29,18 @@ struct WakeConfig {
     // sentence-style prompt, then a match only counts if every token of the
     // wake phrase was decoded with at least this probability. Forced guesses
     // ("Hey Audrey" -> "Hey Ordinary") score lower than real ones.
-    float wake_min_conf  = 0.40f;
+    // Measured: real wakes 0.63-0.71 (incl. a real voice), near-miss
+    // "Hey Audrey" 0.26-0.34. 0.45 sits between them.
+    float wake_min_conf  = 0.45f;
     std::string prompt;              // empty = "<Wake Phrase>, what's the weather?"
+    // Shrink Whisper's encoder window to the utterance length instead of the
+    // fixed 30 s. Encoder cost scales with the window, so short phrases get
+    // much faster. 0 disables (always 30 s).
+    bool  fit_audio_ctx  = true;
+    // Floor for the shrunken window, in encoder positions (20 ms each).
+    // Measured on tiny.en: 256 causes repetition loops, 384+ does not; 512
+    // keeps a margin (~86 ms per phrase vs ~250 ms at the full 1500).
+    int   audio_ctx_min  = 512;
 };
 
 struct WakeResult {
@@ -38,6 +48,8 @@ struct WakeResult {
     bool        speaking      = false; // VAD currently inside speech
     bool        wake_detected = false;
     float       wake_conf     = 0.0f;  // confidence of the best wake-phrase match (0 if none)
+    std::string command;               // words after the wake phrase ("what's the weather?"),
+                                       // empty if the user only said the wake phrase
     std::string transcript;            // text of the utterance(s) decoded this call
     double      audio_ms      = 0.0;   // audio length decoded this call
     double      proc_ms       = 0.0;   // Whisper decode time this call

@@ -1,5 +1,6 @@
 #include "wake_engine.h"
 #include "ring_buffer.h"
+#include "text_utils.h"
 #include "whisper.h"
 
 #include <chrono>
@@ -7,32 +8,9 @@
 #include <cstring>
 #include <algorithm>
 
+using fw::WordP;
+
 namespace {
-
-// Lowercase, turn punctuation into spaces, split into words.
-std::vector<std::string> words(const std::string& s){
-    std::vector<std::string> out; std::string cur;
-    for(char c: s){
-        if(std::isalnum((unsigned char)c)) cur += (char)std::tolower((unsigned char)c);
-        else if(!cur.empty()){ out.push_back(cur); cur.clear(); }
-    }
-    if(!cur.empty()) out.push_back(cur);
-    return out;
-}
-
-int edit_distance(const std::string& a, const std::string& b){
-    std::vector<int> prev(b.size()+1), cur(b.size()+1);
-    for(size_t j=0;j<=b.size();++j) prev[j]=(int)j;
-    for(size_t i=1;i<=a.size();++i){
-        cur[0]=(int)i;
-        for(size_t j=1;j<=b.size();++j)
-            cur[j]=std::min({prev[j]+1, cur[j-1]+1, prev[j-1]+(a[i-1]!=b[j-1])});
-        std::swap(prev,cur);
-    }
-    return prev[b.size()];
-}
-
-struct WordP { std::string w; float p; };   // decoded word + its weakest token probability
 
 // Rebuild words from Whisper's tokens, keeping the lowest token probability
 // seen inside each word (" Ord" + "inary" -> "ordinary", min(p1, p2)).
@@ -55,37 +33,6 @@ std::vector<WordP> token_words(whisper_context* ctx){
     }
     if(!cur.empty()) out.push_back({cur, cur_p});
     return out;
-}
-
-// Fuzzy wake match: the phrase's words must appear consecutively, each word
-// within an edit-distance budget (1 for short words, 2 for longer ones).
-// Returns the confidence (weakest token probability) of the best match, or -1.
-float wake_match(const std::vector<WordP>& t, const std::string& phrase){
-    auto p = words(phrase);
-    float best = -1.0f;
-    if(p.empty() || t.size() < p.size()) return best;
-    for(size_t i = 0; i + p.size() <= t.size(); ++i){
-        bool ok = true; float conf = 1.0f;
-        for(size_t k = 0; k < p.size() && ok; ++k){
-            int budget = p[k].size() <= 4 ? 1 : 2;
-            ok = edit_distance(t[i+k].w, p[k]) <= budget;
-            conf = std::min(conf, t[i+k].p);
-        }
-        if(ok) best = std::max(best, conf);
-    }
-    return best;
-}
-
-// "hey ordinary" -> "Hey Ordinary, what's the weather?"  A sentence-style
-// prompt steers Whisper toward the wake phrase without the repetition loops a
-// bare "hey ordinary" prompt causes.
-std::string default_prompt(const std::string& phrase){
-    std::string out; bool start = true;
-    for(char c : phrase){
-        out += start ? (char)std::toupper((unsigned char)c) : c;
-        start = (c == ' ');
-    }
-    return out + ", what's the weather?";
 }
 
 double now_ms(){ using namespace std::chrono;
@@ -135,6 +82,16 @@ struct WakeEngine::Impl {
         // into a slow repetition loop ("hey hey hey hey" took 5 s in testing).
         wp.temperature_inc  = 0.0f;
         wp.max_tokens       = (int)(n_samples / (double)cfg.sample_rate * 5.0) + 6;
+        // Drop "[Music]", "(applause)" and similar non-speech labels.
+        wp.suppress_nst     = true;
+        if(cfg.fit_audio_ctx){
+            // 1 encoder position = 20 ms = 320 samples. Add 1 s of margin and
+            // round up to a multiple of 64.
+            int need = (int)(n_samples / 320) + 50;
+            need = std::max(need, cfg.audio_ctx_min);
+            need = ((need + 63) / 64) * 64;
+            if(need < 1500) wp.audio_ctx = need;
+        }
         return wp;
     }
 
@@ -156,12 +113,16 @@ struct WakeEngine::Impl {
         std::string text;
         for(int i = 0, n = whisper_full_n_segments(ctx); i < n; ++i)
             text += whisper_full_get_segment_text(ctx, i);
+        text = fw::collapse_repeats(text);
         if(!r.transcript.empty() && !text.empty()) r.transcript += " ";
         r.transcript += text;
 
-        float conf = wake_match(token_words(ctx), cfg.wake_phrase);
+        float conf = fw::wake_match(token_words(ctx), cfg.wake_phrase);
         if(conf > r.wake_conf) r.wake_conf = conf;
-        if(conf >= cfg.wake_min_conf) r.wake_detected = true;
+        if(conf >= cfg.wake_min_conf){
+            r.wake_detected = true;
+            r.command = fw::after_wake(text, cfg.wake_phrase);
+        }
     }
 
     // Advance the state machine by one VAD frame. `skip_end` = samples already
@@ -227,7 +188,7 @@ bool WakeEngine::init(const WakeConfig& cfg){
     // Warm-up: the first whisper_full() call pays one-time setup (~3-4 s on a
     // laptop CPU). Do it here, on 1 s of silence, so the user's first
     // utterance gets normal speed.
-    p_->prompt = cfg.prompt.empty() ? default_prompt(cfg.wake_phrase) : cfg.prompt;
+    p_->prompt = cfg.prompt.empty() ? fw::default_prompt(cfg.wake_phrase) : cfg.prompt;
     std::vector<float> silence(p_->ms(1000), 0.0f);
     whisper_full_params wp = p_->params(silence.size());
     whisper_full(p_->ctx, wp, silence.data(), (int)silence.size());

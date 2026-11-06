@@ -19,6 +19,13 @@ set(WHISPER_BUILD_TESTS    OFF CACHE BOOL "" FORCE)
 set(WHISPER_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 add_subdirectory(vendor/whisper.cpp)
 
-add_executable(wake_stt src/main.cpp src/wake_engine.cpp)
+add_executable(wake_stt src/main.cpp src/wake_engine.cpp src/text_utils.cpp)
 target_include_directories(wake_stt PRIVATE src vendor/whisper.cpp/include)
 target_link_libraries(wake_stt PRIVATE whisper)
+
+# Unit tests for the pure text helpers (no models needed): `ctest` or
+# ./build/text_utils_test
+enable_testing()
+add_executable(text_utils_test tests/text_utils_test.cpp src/text_utils.cpp)
+target_include_directories(text_utils_test PRIVATE src)
+add_test(NAME text_utils COMMAND text_utils_test)
