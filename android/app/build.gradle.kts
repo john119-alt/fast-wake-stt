@@ -12,8 +12,8 @@ android {
         applicationId = "com.fastwake.app"
         minSdk = 28
         targetSdk = 35
-        versionCode = 2
-        versionName = "0.2"
+        versionCode = 3
+        versionName = "0.3"
         ndk { abiFilters += listOf("arm64-v8a") }
         externalNativeBuild {
             cmake {
@@ -44,7 +44,12 @@ android {
         release {
             // Signed with the debug key so the APK installs directly for testing.
             signingConfig = signingConfigs.getByName("debug")
-            isMinifyEnabled = false
+            // R8 shrinking: the Claude SDK contains classes for the whole API
+            // (~42 MB of dex unshrunk). Its jars ship R8 rules
+            // (META-INF/proguard/*.pro) that keep what Jackson needs at runtime.
+            isMinifyEnabled = true
+            isShrinkResources = true
+            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
         }
     }
 
@@ -60,4 +65,23 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
     kotlinOptions { jvmTarget = "17" }
+
+    packaging {
+        // Jackson / OkHttp ship duplicate license and module files.
+        resources.excludes += listOf(
+            "META-INF/DEPENDENCIES", "META-INF/LICENSE*", "META-INF/NOTICE*",
+            "META-INF/INDEX.LIST", "META-INF/*.kotlin_module", "META-INF/versions/9/OSGI-INF/MANIFEST.MF",
+            // GraalVM native-image metadata: not used on Android.
+            "META-INF/native-image/**"
+        )
+    }
+}
+
+dependencies {
+    // Official Claude SDK (Kotlin uses the Java SDK).
+    implementation("com.anthropic:anthropic-java:3.6.0")
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
+
+    testImplementation("junit:junit:4.13.2")
+    testImplementation("com.squareup.okhttp3:mockwebserver:4.12.0")
 }

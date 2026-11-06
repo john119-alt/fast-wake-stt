@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Launcher icon foreground: microphone with sound waves, in the 72dp safe zone. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp" android:height="108dp"
+    android:viewportWidth="108" android:viewportHeight="108">
+    <group android:translateX="30" android:translateY="30">
+        <path android:fillColor="#FFFFFFFF"
+            android:pathData="M24,30a6,6 0,0 0,6 -6V12a6,6 0,0 0,-12 0v12a6,6 0,0 0,6 6zM34,24a10,10 0,0 1,-20 0h-4a14,14 0,0 0,12 13.84V42h4v-4.16A14,14 0,0 0,38 24h-4z"/>
+        <path android:fillColor="#00000000" android:strokeColor="#B3FFFFFF" android:strokeWidth="2.5" android:strokeLineCap="round"
+            android:pathData="M4,18v12M44,18v12"/>
+    </group>
+</vector>

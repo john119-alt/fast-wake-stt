@@ -26,14 +26,20 @@ jobs:
           java-version: '21'
 
       - name: Install NDK and CMake
-        run: yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "ndk;27.2.12479018" "cmake;3.22.1" > /dev/null
+        run: yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "ndk;27.2.12479018" "cmake;3.22.1" "build-tools;35.0.0" > /dev/null
 
-      - name: Build APK
+      - name: Build APK and run unit tests
         working-directory: android
         run: |
           echo "sdk.dir=$ANDROID_HOME" > local.properties
-          chmod +x gradlew
-          ./gradlew --no-daemon assembleRelease
+          chmod +x gradlew r8-smoke.sh
+          ./gradlew --no-daemon assembleRelease testReleaseUnitTest compileReleaseUnitTestKotlin
+
+      # The release build is R8-shrunk; prove the Claude SDK still works after
+      # shrinking (mock Claude server, real request/streaming/error paths).
+      - name: R8 smoke test
+        working-directory: android
+        run: ./r8-smoke.sh 2>&1 | grep -E '^(PASS|FAIL|R8)'; exit ${PIPESTATUS[0]}
 
       - name: Read version
         id: v

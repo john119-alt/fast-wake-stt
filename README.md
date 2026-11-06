@@ -1,182 +1,170 @@
-# fast-wake-stt
+# FastWake
 
-A clean-room **offline wake-word + speech-to-text engine** in C++ (whisper.cpp +
-Silero VAD). It's a reference you own, inspired by the *architecture* of the
-"Ordi" app's native engine but rebuilt with four concrete speed/quality
-improvements. None of Ordi's code is used.
+A hands-free voice assistant for Android. Say **"Hey Ordinary, what's the
+weather in Mumbai?"** and it answers out loud. Wake-word detection and
+speech-to-text run **on the phone** (whisper.cpp + Silero VAD); answers come
+from **Claude** with live **web search**, streamed and spoken sentence by
+sentence.
 
-## What it does (v0.2)
-1. Runs the Silero voice detector on every 32 ms of incoming audio (streaming,
-   ~4 ms of compute per second of audio).
-2. When speech starts, marks an utterance (with 300 ms of pre-roll so the first
-   word isn't clipped).
-3. After ~0.5 s of silence, transcribes **only that utterance**, once, with
-   Whisper. Nothing is transcribed while nobody is talking.
-4. Checks the transcript for the wake phrase ("hey ordinary" by default) and
-   verifies Whisper's confidence in it, to reject forced guesses.
+This is a clean-room project. Its on-device engine was designed after studying
+how the "Ordi" app works, then rebuilt with measurable speed improvements. None
+of Ordi's code, models, or assets are used. ("Hey Ordinary" is just the current
+wake phrase and can be changed.)
 
-## The four improvements over Ordi's engine
-| # | Ordi (from decompilation) | Here |
+## How it works
+
+```
+mic (16 kHz) ─▶ Silero VAD on every 32 ms ─▶ end of speech ─▶ Whisper (on device)
+                                                                    │
+            "Hey Ordinary, <question>"  ◀── wake-phrase check + confidence
+                       │
+                       ▼
+         Claude (streaming, web search) ─▶ sentence splitter ─▶ text-to-speech
+                       │
+                       └─ follow-up window: reply without the wake word for 7 s
+```
+
+- **Listening** runs as a foreground service with a "FastWake is listening"
+  notification, so it works with the screen off.
+- **Only your question** (the words after the wake phrase) leaves the phone, and
+  it goes only to Anthropic. Everything else you say is transcribed on the phone
+  and discarded.
+- **Speaking starts after the first sentence**, while the rest of the answer is
+  still streaming.
+- **Follow-ups**: after an answer, just keep talking. Web-search results stay in
+  the conversation, so "and tomorrow?" works.
+- **History** is saved on the phone only.
+
+## Install and set up (Android)
+
+1. On your phone, open **github.com/john119-alt/fast-wake-stt → Releases**,
+   download the newest `FastWake-v*.apk`, and install it. Requires an arm64
+   phone with Android 9 or newer. New versions install over old ones.
+2. Get a Claude API key at **console.anthropic.com → API Keys** (pay-as-you-go,
+   billed to your Anthropic account).
+3. In the app, open **Settings**, paste the key, tap **Save key**, then
+   **Test key**.
+4. Back on the main screen tap **Start listening** and allow the microphone. The
+   first start downloads the speech models (~44 MB, use Wi-Fi).
+5. Say *"Hey Ordinary, …"*.
+
+### Settings
+| Setting | Default | |
 |---|---|---|
-| 1 | `whisper_context_default_params` with **`use_gpu = 0`** (CPU only) | `use_gpu` is configurable; build with `-DWAKE_ENABLE_VULKAN=ON` for a GPU backend |
-| 2 | `ordi_wake_feed` **reallocated a growing `std::vector<float>`** every call on the always-on path | `RingBuffer<float>` allocated **once**, no per-feed malloc |
-| 3 | thread count **hardcoded to 2** | `n_threads` configurable (CLI arg) |
-| 4 | reply waited on the full backend round-trip | streaming design — see "Streaming" below |
-| 5 | (v0.2) | event-driven decoding: Whisper runs once per finished utterance, not continuously |
+| Model | Opus 5.5 | Opus 5.5 (smartest), Sonnet 5.5 (balanced), Haiku 5.5 (fastest, cheapest) |
+| Follow-up questions | on | listen 7 s after an answer without the wake word |
+| Wake chime | on | tone when it hears the wake phrase on its own |
+| Speaking speed | 1.0× | 0.7×–1.5× |
 
-## Get the code
+The API key is encrypted with an Android Keystore key (hardware-backed on most
+phones). It's sent only to Anthropic. A shared server is planned before giving
+the app to other people (see Roadmap), since any key inside an app can be
+extracted.
+
+## Claude integration
+
+`android/app/src/main/java/com/fastwake/app/assistant/ClaudeAssistant.kt`, using
+the official Claude Java SDK (`com.anthropic:anthropic-java:3.6.0`):
+
+- Streaming Messages API, `output_config.effort = low` for quick spoken answers,
+  and a voice-specific system prompt with the user's local date, time and country.
+- Web search: `web_search_20260209` (Opus/Sonnet) or `web_search_20250305`
+  (Haiku), max 3 searches, with the phone's timezone and country.
+- Conversation history keeps Claude's full replies (including search results).
+  `pause_turn` is resumed automatically.
+- Server-side refusal fallbacks (`fallbacks: "default"`, beta
+  `server-side-fallback-2026-07-01`) on Opus 5.5 and Sonnet 5.5. A declined
+  question is retried on another model instead of failing.
+- Errors (bad key, no credit, rate limit, overloaded, offline) become short
+  spoken messages.
+
+## Speed (on-device engine)
+
+Measured on a 4-core Intel Xeon 2.1 GHz, CPU only, tiny.en q8_0, 4 threads.
+
+| | v0.1 | v0.2 | v0.3 |
+|---|---|---|---|
+| How Whisper runs | re-decodes 8 s window every second | once per finished phrase | same, with encoder window fitted to the phrase |
+| Decode per phrase | ~250 ms | ~250 ms | **~60–100 ms** |
+| 34 s session, total compute | 7,897 ms | 1,448 ms | **634 ms** (53× real-time) |
+
+On a real phone (v0.2, Android tablet) a phrase took ~730 ms regardless of
+length, because Whisper always processed a 30 s window. v0.3 fits the window to
+the phrase (minimum 512 positions ≈ 10 s; smaller windows caused repetition
+loops in testing).
+
+### Compared with Ordi's engine (from its decompiled native library)
+| Ordi | FastWake |
+|---|---|
+| `use_gpu = 0` (CPU only) | configurable; `-DWAKE_ENABLE_VULKAN=ON` for a GPU backend |
+| reallocates a growing `std::vector<float>` on every audio feed | fixed ring buffer, allocated once |
+| 2 threads, hard-coded | configurable (2 → 4 threads: −35% decode time) |
+| waits for the full cloud reply before speaking | streams and speaks the first sentence first |
+
+## Wake-word accuracy
+
+A general speech model isn't a dedicated wake-word detector. Whisper is nudged
+toward the wake phrase, and a wake only counts if every wake-phrase token was
+decoded with probability ≥ 0.45. Real wakes scored 0.63–0.71 (including a real
+voice on a phone). The near-miss "Hey Audrey" scored 0.26–0.34 and is rejected.
+Decoder loops ("and so my fellow Americans and so my fellow…") are collapsed
+before the text is used. A dedicated keyword-spotting model is on the roadmap.
+
+## Tests
+
+| Suite | What | Run |
+|---|---|---|
+| Engine unit tests | wake matching, loop collapsing, command extraction | `ctest --test-dir build` |
+| Audio regression | 7 clips with expected wake/no-wake, fails on any loop | `scripts/test.sh` |
+| App unit tests (23) | Claude client against a mock streaming server; sentence splitter; conversation state machine | `cd android && ./gradlew testReleaseUnitTest` |
+| R8 smoke test | the shrunk release build still talks to Claude correctly (requests, streaming, search history, errors) | `cd android && ./r8-smoke.sh` |
+
+GitHub Actions runs all of them on every push. An APK is only published if they
+pass.
+
+## Build
+
 ```bash
 git clone --recursive https://github.com/john119-alt/fast-wake-stt.git
-# already cloned without --recursive?
-git submodule update --init
-```
 
-## Files
-```
-src/ring_buffer.h       fixed-capacity circular audio buffer (improvement #2)
-src/wake_engine.h/.cpp  the engine (init / feed / flush / reset)
-src/main.cpp            CLI: load WAV, stream in 1s chunks, print each utterance + timing
-CMakeLists.txt          desktop build; Vulkan toggle (improvement #1)
-android/                FastWake Android app (Kotlin + JNI, arm64)
-scripts/test.sh         wake-word regression tests (expected answer per clip)
-test-audio/             wake, no-wake, near-miss and long-speech test clips
-.github/workflows/      APK build + release, engine tests (run on every push)
-vendor/whisper.cpp      upstream whisper.cpp, git submodule pinned to 727d3e7
-```
-
-## Android app (FastWake)
-Every push to `main` is built by GitHub Actions
-(`.github/workflows/android-apk.yml`) and published on the **Releases** page as
-`FastWake-v<version>.apk`. Bumping `versionName` in
-`android/app/build.gradle.kts` starts a new release; otherwise the current
-version's APK is replaced with the newest build. All builds share the committed
-debug key, so a new APK installs as an update over the old one.
-
-Install the APK on an arm64 phone running Android 9 or newer. On first launch it downloads the two official models
-(~44 MB) into app storage. Press **Start listening**, then say "Hey Ordinary".
-The badge turns purple while it hears speech and green on a wake. Each finished
-phrase is logged as `[2.3s speech → 412 ms] conf=0.55 …`: speech length, decode
-time on your phone, and wake-word confidence.
-
-Build it yourself (Android SDK + NDK 27.2.12479018):
-```bash
-cd android
-echo "sdk.dir=$ANDROID_HOME" > local.properties
-./gradlew assembleRelease     # -> app/build/outputs/apk/release/app-release.apk
-```
-The release build is signed with the debug key so it installs directly; use a
-real signing key before publishing anywhere.
-
-## Build (desktop, CPU)
-```bash
-cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
-cmake --build build -j
-```
-
-## Build (desktop, GPU — improvement #1)
-Install the Vulkan SDK, then:
-```bash
-cmake -S . -B build -G Ninja -DWAKE_ENABLE_VULKAN=ON -DCMAKE_BUILD_TYPE=Release
-cmake --build build -j
-```
-
-## Run / benchmark
-```bash
-# wake_stt <whisper_model> <vad_model> <audio.wav> [threads] [use_gpu] [wake_phrase]
-./build/wake_stt ggml-tiny.en-q8_0.bin ggml-silero-v5.1.2.bin sample.wav 4 1 "hey ordinary"
-```
-Models (official, not committed to git):
-```bash
+# desktop engine + CLI
+cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release && cmake --build build -j
 mkdir -p models
 curl -L -o models/ggml-tiny.en-q8_0.bin  https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.en-q8_0.bin
 curl -L -o models/ggml-silero-v5.1.2.bin https://huggingface.co/ggml-org/whisper-vad/resolve/main/ggml-silero-v5.1.2.bin
+./build/wake_stt models/ggml-tiny.en-q8_0.bin models/ggml-silero-v5.1.2.bin test-audio/session.wav 4 0
+
+# Android app (SDK + NDK 27.2.12479018)
+cd android && echo "sdk.dir=$ANDROID_HOME" > local.properties && ./gradlew assembleRelease
 ```
-Audio
-must be 16 kHz, 16-bit, mono WAV. The tool prints RTF (lower = faster); compare
-`threads` and `use_gpu 0` vs `1` to quantify each lever.
+Releases are R8-shrunk (6.4 MB instead of 45 MB, since the Claude SDK covers the
+whole API) and signed with the committed debug key so they install directly. Use
+a real signing key before publishing to a store.
 
-## Measured results (4-core Intel Xeon 2.1 GHz, CPU only, tiny.en q8_0, 4 threads)
-
-**v0.1 vs v0.2 on `session.wav`** (34 s: three phrases separated by silence,
-which is what real listening looks like):
-
-| | v0.1 (re-decode window every second) | v0.2 (decode finished utterances) |
-|---|---|---|
-| Total compute | 7,897 ms | **1,448 ms** (5.5× less) |
-| Speed | 4.3× real-time | **23.3× real-time** |
-| Phrases transcribed | only the last window | **all six** |
-| Engine load (once per app start) | — | 289 ms incl. warm-up |
-| Voice-detector cost | — | ~118 ms for 34 s of audio |
-
-Each utterance decodes in ~200–250 ms on this CPU.
-Threads (lever #3, v0.1 measurement on jfk.wav): 1 → 8,759 ms ·
-**2 (Ordi) → 5,112 ms** · **4 → 3,347 ms** (−35%).
-GPU (lever #1) not measured: this machine has no GPU.
-
-## Wake-word detection and its limits
-A general speech-to-text model is not a dedicated wake-word detector, so there's
-a tradeoff (measured on synthetic espeak voices):
-
-| Whisper hint | Real "Hey Ordinary" | Near-miss "Hey Audrey" |
-|---|---|---|
-| none | misheard ("Hey, what did I read?") | correct, no wake |
-| bare "hey ordinary" | **stuck in a "hey hey hey hey" loop, 5 s** | — |
-| sentence "Hey Ordinary, what's the weather?" | correct | **transcribed as "Hey Ordinary"** |
-
-v0.2 uses the sentence hint, then **verifies**: a wake only counts if every
-wake-phrase token was decoded with probability ≥ `wake_min_conf` (0.40).
-Measured token confidence for "Ord": real wake 0.58 / 0.51, "Hey Audrey" 0.26,
-so the near-miss is rejected. Temperature fallback is off and output is
-token-capped, so a bad clip can't loop. **This threshold was tuned on synthetic
-voices — tune it on real recordings** (the app logs `conf=` for each wake).
-The robust long-term fix is a dedicated keyword-spotting model.
-
-## Tests
-```bash
-scripts/test.sh            # build/ and models/ by default
+## Layout
 ```
-Seven clips with an expected answer each: real wakes (`hey`, `wake_question`,
-`session`) must trigger; `nowake`, `nearmiss_audrey`, `nearmiss_ordinary`, `jfk`
-must not. GitHub Actions runs this on every push.
-
-## Test it with your own voice
-Record yourself saying "Hey Ordinary, …" on your phone, copy it over, then:
-```bash
-ffmpeg -i my_recording.m4a -ar 16000 -ac 1 -sample_fmt s16 me.wav
-./build/wake_stt models/ggml-tiny.en-q8_0.bin models/ggml-silero-v5.1.2.bin me.wav 4 0
+src/                    on-device engine (C++): wake_engine, ring_buffer, text_utils, CLI
+tests/                  engine unit tests
+scripts/test.sh         audio regression tests
+test-audio/             wake / no-wake / near-miss / long-speech clips
+android/app/src/main/
+  cpp/jni.cpp           JNI bridge to the engine
+  java/com/fastwake/app/
+    assistant/          Claude client, sentence splitter
+    service/            foreground listening service, conversation state machine
+    speech/             text-to-speech, chimes
+    data/               encrypted key storage, settings, history, model download
+    ui/                 main, settings, history screens
+android/r8-smoke.sh     shrunk-build verification
+vendor/whisper.cpp      upstream whisper.cpp (submodule, pinned)
 ```
 
-## Build for Android (what ships in the app)
-Use the NDK toolchain; enable the GPU backend for ggml:
-```bash
-cmake -S . -B build-android -G Ninja \
-  -DCMAKE_TOOLCHAIN_FILE=$ANDROID_NDK/build/cmake/android.toolchain.cmake \
-  -DANDROID_ABI=arm64-v8a -DANDROID_PLATFORM=android-28 \
-  -DWAKE_ENABLE_VULKAN=ON -DCMAKE_BUILD_TYPE=Release
-cmake --build build-android -j
-```
-Wrap `WakeEngine` in a small JNI shim (mirroring Ordi's
-`nativeCreate/feed/text`) and load the resulting `.so` from your app. From
-Flutter, call it over a platform channel or `dart:ffi`.
-
-## Streaming (improvement #4) — design
-Ordi waits for the full Lambda→Gemini reply before speaking. To cut perceived
-latency:
-- **STT side:** call `whisper_full` on a sliding window and emit partial text as
-  it grows (don't wait for end-of-utterance) — start sending to the backend
-  early.
-- **Backend side:** have your `/chat` endpoint **stream** tokens (SSE or chunked
-  HTTP) from Gemini, and start TTS on the first sentence instead of the whole
-  reply. Keep the model connection warm (provisioned concurrency) to kill cold
-  starts.
-
-## Tuning knobs (in `WakeConfig`)
-`n_threads` (match performance cores), `vad_threshold` / `vad_release`
-(Silero sensitivity + hysteresis), `min_silence_ms` (how long a pause ends an
-utterance — lower = faster response, but long pauses split sentences),
-`min_speech_ms`, `preroll_ms`, `max_utt_ms`, `wake_min_conf`, `prompt`, and
-model/quantization (tiny.en q8_0 → q5_1/q4_0 for speed, base.en for accuracy).
+## Roadmap
+- Server backend (key stays on a server) before sharing the app.
+- Custom wake phrase, plus a dedicated keyword-spotting model.
+- GPU (Vulkan) build for Android.
+- Phone actions: alarms, timers, reminders, calls, messages.
 
 ## License
-Your code under this repo; whisper.cpp under its MIT license (see
-`vendor/whisper.cpp/LICENSE`).
+Your code in this repo; whisper.cpp under its MIT license
+(`vendor/whisper.cpp/LICENSE`).
