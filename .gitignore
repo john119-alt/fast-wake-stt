@@ -1,0 +1,18 @@
+# build outputs
+build/
+build-*/
+*.log
+prebuilt-linux-x86_64/
+
+# models are downloaded, never committed
+models/*.bin
+*.bin
+
+# android
+android/.gradle/
+android/app/build/
+android/app/.cxx/
+android/build/
+android/local.properties
+*.apk
+*.aab
